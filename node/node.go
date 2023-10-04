@@ -1405,6 +1405,10 @@ func LoadStateFromDBOrGenesisDoc(
 	}
 
 	incomingGenDocHash := tmhash.Sum(genDocBytes)
+
+	fmt.Println("Loaded genesis doc", "chain_id", genDoc.ChainID, "app_hash", genDoc.AppHash)
+	fmt.Println("incomingGenDocHash: ", incomingGenDocHash, " genDocHash: ", genDocHash)
+
 	if len(genDocHash) != 0 && !bytes.Equal(genDocHash, incomingGenDocHash) {
 		return sm.State{}, fmt.Errorf("genesis doc hash in db does not match loaded genesis doc")
 	}
