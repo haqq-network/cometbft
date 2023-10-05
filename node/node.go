@@ -23,7 +23,6 @@ import (
 	"github.com/cometbft/cometbft/crypto/tmhash"
 	"github.com/cometbft/cometbft/evidence"
 
-	cmtjson "github.com/cometbft/cometbft/libs/json"
 	"github.com/cometbft/cometbft/libs/log"
 	cmtpubsub "github.com/cometbft/cometbft/libs/pubsub"
 	"github.com/cometbft/cometbft/libs/service"
@@ -1399,16 +1398,20 @@ func LoadStateFromDBOrGenesisDoc(
 		return sm.State{}, err
 	}
 
-	genDocBytes, err := cmtjson.Marshal(genDoc)
-	if err != nil {
-		return sm.State{}, fmt.Errorf("failed to save genesis doc hash due to marshaling error: %w", err)
-	}
+	validatorsHash := genDoc.ValidatorHash()
 
-	fmt.Println("genDocBytes len: ", len(genDocBytes))
-	fmt.Println("genDocBytes first 10 bytes: ", genDocBytes[:10])
-	fmt.Println("genDocBytes last 10 bytes: ", genDocBytes[len(genDocBytes)-10:])
+	// fmt.Println("validatorsHash len: ", len(validatorsHash))
 
-	incomingGenDocHash := tmhash.Sum(genDocBytes)
+	// genDocBytes, err := cmtjson.Marshal(genDoc)
+	// if err != nil {
+	// 	return sm.State{}, fmt.Errorf("failed to save genesis doc hash due to marshaling error: %w", err)
+	// }
+
+	// fmt.Println("genDocBytes len: ", len(genDocBytes))
+	// fmt.Println("genDocBytes first 10 bytes: ", genDocBytes[:10])
+	// fmt.Println("genDocBytes last 10 bytes: ", genDocBytes[len(genDocBytes)-10:])
+
+	incomingGenDocHash := tmhash.Sum(validatorsHash)
 
 	fmt.Println("Loaded genesis doc", "chain_id", genDoc.ChainID, "app_hash", genDoc.AppHash)
 	fmt.Println("incomingGenDocHash: ", incomingGenDocHash)
