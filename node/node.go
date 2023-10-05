@@ -1383,7 +1383,7 @@ func makeNodeInfo(
 
 //------------------------------------------------------------------------------
 
-var genesisDocHashKey = []byte("genesisDocHash")
+var genesisDocHashKey = []byte("genesisDocHash_v2")
 
 // loadStateFromDBOrGenesisDoc attempts to load the state from the
 // database, or creates one using the given genesisDocProvider. On success this also
