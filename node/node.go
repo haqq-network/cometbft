@@ -21,10 +21,10 @@ import (
 	cfg "github.com/cometbft/cometbft/config"
 	cs "github.com/cometbft/cometbft/consensus"
 	"github.com/cometbft/cometbft/crypto"
+	"github.com/cometbft/cometbft/crypto/tmhash"
 	"github.com/cometbft/cometbft/evidence"
 	"github.com/cometbft/cometbft/light"
 
-	cmtjson "github.com/cometbft/cometbft/libs/json"
 	"github.com/cometbft/cometbft/libs/log"
 	cmtpubsub "github.com/cometbft/cometbft/libs/pubsub"
 	"github.com/cometbft/cometbft/libs/service"
@@ -247,7 +247,20 @@ func BootstrapState(ctx context.Context, config *cfg.Config, dbProvider DBProvid
 		return fmt.Errorf("state not empty, trying to initialize non empty state")
 	}
 
-	genState, _, err := LoadStateFromDBOrGenesisDocProvider(stateDB, DefaultGenesisDocProviderFunc(config))
+	// genState, err := LoadStateFromDBOrGenesisDoc(stateDB, DefaultGenesisDocProviderFunc(config))
+	// if err != nil {
+	// 	return err
+	// }
+
+	// state, genDoc, err := LoadStateFromDBOrGenesisDocProvider(stateDB, genesisDocProvider)
+	genDoc, _ := DefaultGenesisDocProviderFunc(config)()
+
+	// err = genDoc.ValidateAndComplete()
+	// if err != nil {
+	// 	return fmt.Errorf("error in genesis doc: %w", err)
+	// }
+
+	genState, err := LoadStateFromDBOrGenesisDoc(stateStore, stateDB, genDoc)
 	if err != nil {
 		return err
 	}
@@ -872,7 +885,18 @@ func NewNodeWithContext(ctx context.Context,
 		DiscardABCIResponses: config.Storage.DiscardABCIResponses,
 	})
 
-	state, genDoc, err := LoadStateFromDBOrGenesisDocProvider(stateDB, genesisDocProvider)
+	// state, genDoc, err := LoadStateFromDBOrGenesisDocProvider(stateDB, genesisDocProvider)
+	genDoc, err := genesisDocProvider()
+	if err != nil {
+		return nil, err
+	}
+
+	err = genDoc.ValidateAndComplete()
+	if err != nil {
+		return nil, fmt.Errorf("error in genesis doc: %w", err)
+	}
+
+	state, err := LoadStateFromDBOrGenesisDoc(stateStore, stateDB, genDoc)
 	if err != nil {
 		return nil, err
 	}
@@ -1538,67 +1562,104 @@ func makeNodeInfo(
 
 //------------------------------------------------------------------------------
 
-var genesisDocKey = []byte("genesisDoc")
+var genesisDocHashKey = []byte("genesisDocHash")
 
-// LoadStateFromDBOrGenesisDocProvider attempts to load the state from the
+// LoadStateFromDBOrGenesisDoc attempts to load the state from the
 // database, or creates one using the given genesisDocProvider. On success this also
 // returns the genesis doc loaded through the given provider.
-func LoadStateFromDBOrGenesisDocProvider(
+func LoadStateFromDBOrGenesisDoc(
+	stateStore sm.Store,
 	stateDB dbm.DB,
-	genesisDocProvider GenesisDocProvider,
-) (sm.State, *types.GenesisDoc, error) {
-	// Get genesis doc
-	genDoc, err := loadGenesisDoc(stateDB)
+	genDoc *types.GenesisDoc,
+) (sm.State, error) {
+	// 1. Verify genesisDoc hash in db if exists
+	genDocHash, err := stateDB.Get(genesisDocHashKey)
 	if err != nil {
-		genDoc, err = genesisDocProvider()
+		return sm.State{}, err
+	}
+
+	validatorsHash := genDoc.ValidatorHash()
+
+	// fmt.Println("validatorsHash len: ", len(validatorsHash))
+
+	// genDocBytes, err := cmtjson.Marshal(genDoc)
+	// if err != nil {
+	// 	return sm.State{}, fmt.Errorf("failed to save genesis doc hash due to marshaling error: %w", err)
+	// }
+
+	// fmt.Println("genDocBytes len: ", len(genDocBytes))
+	// fmt.Println("genDocBytes first 10 bytes: ", genDocBytes[:10])
+	// fmt.Println("genDocBytes last 10 bytes: ", genDocBytes[len(genDocBytes)-10:])
+
+	incomingGenDocHash := tmhash.Sum(validatorsHash)
+
+	fmt.Println("Loaded genesis doc", "chain_id", genDoc.ChainID, "app_hash", genDoc.AppHash)
+	fmt.Println("incomingGenDocHash: ", incomingGenDocHash)
+	fmt.Println("genDocHash: ", genDocHash)
+
+	if len(genDocHash) != 0 && !bytes.Equal(genDocHash, incomingGenDocHash) {
+		return sm.State{}, fmt.Errorf("genesis doc hash in db does not match loaded genesis doc")
+	}
+
+	// 2. Attempt to load state form the database
+	state, err := stateStore.Load()
+	if err != nil {
+		return sm.State{}, err
+	}
+
+	if state.IsEmpty() {
+		// 3. If it's not there, derive it from the genesis doc
+		state, err = sm.MakeGenesisState(genDoc)
 		if err != nil {
-			return sm.State{}, nil, err
+			return sm.State{}, err
 		}
-		// save genesis doc to prevent a certain class of user errors (e.g. when it
-		// was changed, accidentally or not). Also good for audit trail.
-		if err := saveGenesisDoc(stateDB, genDoc); err != nil {
-			return sm.State{}, nil, err
+
+		// 4. save the gensis document to the state store so
+		// its fetchable by other callers.
+		if err := stateStore.Save(state); err != nil {
+			return sm.State{}, err
+		}
+
+		// 5. Save the genDoc hash in the store if it doesn't already exist for future verification
+		if len(genDocHash) == 0 {
+			if err := stateDB.SetSync(genesisDocHashKey, incomingGenDocHash); err != nil {
+				return sm.State{}, fmt.Errorf("failed to save genesis doc hash to db: %w", err)
+			}
 		}
 	}
-	stateStore := sm.NewStore(stateDB, sm.StoreOptions{
-		DiscardABCIResponses: false,
-	})
-	state, err := stateStore.LoadFromDBOrGenesisDoc(genDoc)
-	if err != nil {
-		return sm.State{}, nil, err
-	}
-	return state, genDoc, nil
+
+	return state, nil
 }
 
-// panics if failed to unmarshal bytes
-func loadGenesisDoc(db dbm.DB) (*types.GenesisDoc, error) {
-	b, err := db.Get(genesisDocKey)
-	if err != nil {
-		panic(err)
-	}
-	if len(b) == 0 {
-		return nil, errors.New("genesis doc not found")
-	}
-	var genDoc *types.GenesisDoc
-	err = cmtjson.Unmarshal(b, &genDoc)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to load genesis doc due to unmarshaling error: %v (bytes: %X)", err, b))
-	}
-	return genDoc, nil
-}
+// // panics if failed to unmarshal bytes
+// func loadGenesisDoc(db dbm.DB) (*types.GenesisDoc, error) {
+// 	b, err := db.Get(genesisDocKey)
+// 	if err != nil {
+// 		panic(err)
+// 	}
+// 	if len(b) == 0 {
+// 		return nil, errors.New("genesis doc not found")
+// 	}
+// 	var genDoc *types.GenesisDoc
+// 	err = cmtjson.Unmarshal(b, &genDoc)
+// 	if err != nil {
+// 		panic(fmt.Sprintf("Failed to load genesis doc due to unmarshaling error: %v (bytes: %X)", err, b))
+// 	}
+// 	return genDoc, nil
+// }
 
-// panics if failed to marshal the given genesis document
-func saveGenesisDoc(db dbm.DB, genDoc *types.GenesisDoc) error {
-	b, err := cmtjson.Marshal(genDoc)
-	if err != nil {
-		return fmt.Errorf("failed to save genesis doc due to marshaling error: %w", err)
-	}
-	if err := db.SetSync(genesisDocKey, b); err != nil {
-		return err
-	}
+// // panics if failed to marshal the given genesis document
+// func saveGenesisDoc(db dbm.DB, genDoc *types.GenesisDoc) error {
+// 	b, err := cmtjson.Marshal(genDoc)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to save genesis doc due to marshaling error: %w", err)
+// 	}
+// 	if err := db.SetSync(genesisDocKey, b); err != nil {
+// 		return err
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 func createAndStartPrivValidatorSocketClient(
 	listenAddr,
