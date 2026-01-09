@@ -62,6 +62,10 @@ func ExampleHTTP_simple() {
 	fmt.Println("Got value   :", string(qres.Response.Value))
 
 	// Output:
+	// Loaded Genesis Doc: chain_id = test-chain, app_hash = .
+	// Loaded Genesis Doc Hash:  [189 56 24 208 112 125 2 139 135 209 60 174 62 174 244 123 30 38 168 200 75 14 94 22 73 5 40 57 6 82 127 138]
+	// Stored Genesis Doc Hash:  []
+	// First start with provided Genesis Doc and empty state...
 	// Sent tx     : name=satoshi
 	// Queried for : name
 	// Got value   : satoshi
@@ -134,6 +138,10 @@ func ExampleHTTP_batching() {
 	}
 
 	// Output:
+	// Loaded Genesis Doc: chain_id = test-chain, app_hash = .
+	// Loaded Genesis Doc Hash:  [189 56 24 208 112 125 2 139 135 209 60 174 62 174 244 123 30 38 168 200 75 14 94 22 73 5 40 57 6 82 127 138]
+	// Stored Genesis Doc Hash:  []
+	// First start with provided Genesis Doc and empty state...
 	// firstName = satoshi
 	// lastName = nakamoto
 }
@@ -187,5 +195,9 @@ func ExampleHTTP_maxBatchSize() {
 	}
 
 	// Output:
+	// Loaded Genesis Doc: chain_id = test-chain, app_hash = .
+	// Loaded Genesis Doc Hash:  [189 56 24 208 112 125 2 139 135 209 60 174 62 174 244 123 30 38 168 200 75 14 94 22 73 5 40 57 6 82 127 138]
+	// Stored Genesis Doc Hash:  []
+	// First start with provided Genesis Doc and empty state...
 	// Max Request Batch Exceeded
 }

@@ -18,10 +18,10 @@ import (
 	cfg "github.com/cometbft/cometbft/config"
 	cs "github.com/cometbft/cometbft/consensus"
 	"github.com/cometbft/cometbft/crypto"
+	"github.com/cometbft/cometbft/crypto/tmhash"
 	"github.com/cometbft/cometbft/evidence"
 	"github.com/cometbft/cometbft/statesync"
 
-	cmtjson "github.com/cometbft/cometbft/libs/json"
 	"github.com/cometbft/cometbft/libs/log"
 	"github.com/cometbft/cometbft/light"
 	mempl "github.com/cometbft/cometbft/mempool"
@@ -548,7 +548,7 @@ func startStateSync(
 
 //------------------------------------------------------------------------------
 
-var genesisDocKey = []byte("genesisDoc")
+var genesisDocHashKey = []byte("genesisDocHash")
 
 // LoadStateFromDBOrGenesisDocProvider attempts to load the state from the
 // database, or creates one using the given genesisDocProvider. On success this also
@@ -557,58 +557,78 @@ func LoadStateFromDBOrGenesisDocProvider(
 	stateDB dbm.DB,
 	genesisDocProvider GenesisDocProvider,
 ) (sm.State, *types.GenesisDoc, error) {
-	// Get genesis doc
-	genDoc, err := loadGenesisDoc(stateDB)
+	// 0. Assume genesisDoc hash is exists and stored in stateDB
+	genDocHashExists := true
+	// 1. Get genesisDoc hash from stateDB, set genDocHashExists to false if not exists
+	storedGenDocHash, err := loadGenesisDocHash(stateDB)
 	if err != nil {
-		genDoc, err = genesisDocProvider()
-		if err != nil {
-			return sm.State{}, nil, err
-		}
-
-		err = genDoc.ValidateAndComplete()
-		if err != nil {
-			return sm.State{}, nil, fmt.Errorf("error in genesis doc: %w", err)
-		}
-		// save genesis doc to prevent a certain class of user errors (e.g. when it
-		// was changed, accidentally or not). Also good for audit trail.
-		if err := saveGenesisDoc(stateDB, genDoc); err != nil {
-			return sm.State{}, nil, err
-		}
+		genDocHashExists = false
 	}
+
+	// 2. Load original genesisDoc from file
+	genDoc, err := genesisDocProvider()
+	if err != nil {
+		return sm.State{}, nil, err
+	}
+
+	err = genDoc.ValidateAndComplete()
+	if err != nil {
+		return sm.State{}, nil, fmt.Errorf("error in genesis doc: %w", err)
+	}
+
+	loadedGenDocHash := tmhash.Sum(genDoc.ValidatorHash())
+	fmt.Println(fmt.Sprintf("Loaded Genesis Doc: chain_id = %s, app_hash = %s.", genDoc.ChainID, genDoc.AppHash))
+	fmt.Println("Loaded Genesis Doc Hash: ", loadedGenDocHash)
+	fmt.Println("Stored Genesis Doc Hash: ", storedGenDocHash)
+
 	stateStore := sm.NewStore(stateDB, sm.StoreOptions{
 		DiscardABCIResponses: false,
 	})
+
+	// 3. Attempt to load state form the database. If it's not there, derive it from the genesis doc
 	state, err := stateStore.LoadFromDBOrGenesisDoc(genDoc)
 	if err != nil {
 		return sm.State{}, nil, err
 	}
+
+	// 4. Save the genesis document to the state store so it'd be accessible by other callers.
+	if err := stateStore.Save(state); err != nil {
+		return sm.State{}, nil, err
+	}
+
+	// 5. Save the genDoc hash in the store if it doesn't already exist for future verification
+	if !genDocHashExists {
+		fmt.Println("First start with provided Genesis Doc and empty state...")
+		// save genesis doc hash to prevent a certain class of user errors (e.g. when it
+		// was changed, accidentally or not). Also good for audit trail.
+		if err := saveGenesisDocHash(stateDB, loadedGenDocHash); err != nil {
+			return sm.State{}, nil, err
+		}
+	} else {
+		// 6. Validate, we have the same Genesis Doc as was provided on the first start
+		if !bytes.Equal(storedGenDocHash, loadedGenDocHash) {
+			panic("genesis doc hash mismatch")
+		}
+	}
+
 	return state, genDoc, nil
 }
 
-// panics if failed to unmarshal bytes
-func loadGenesisDoc(db dbm.DB) (*types.GenesisDoc, error) {
-	b, err := db.Get(genesisDocKey)
+func loadGenesisDocHash(db dbm.DB) ([]byte, error) {
+	// 1. Verify genesisDoc hash in db if exists
+	genDocHash, err := db.Get(genesisDocHashKey)
 	if err != nil {
 		panic(err)
 	}
-	if len(b) == 0 {
+	if len(genDocHash) == 0 {
 		return nil, errors.New("genesis doc not found")
 	}
-	var genDoc *types.GenesisDoc
-	err = cmtjson.Unmarshal(b, &genDoc)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to load genesis doc due to unmarshaling error: %v (bytes: %X)", err, b))
-	}
-	return genDoc, nil
+
+	return genDocHash, nil
 }
 
-// panics if failed to marshal the given genesis document
-func saveGenesisDoc(db dbm.DB, genDoc *types.GenesisDoc) error {
-	b, err := cmtjson.Marshal(genDoc)
-	if err != nil {
-		return fmt.Errorf("failed to save genesis doc due to marshaling error: %w", err)
-	}
-	return db.SetSync(genesisDocKey, b)
+func saveGenesisDocHash(db dbm.DB, genDocHash []byte) error {
+	return db.SetSync(genesisDocHashKey, genDocHash)
 }
 
 func createAndStartPrivValidatorSocketClient(
